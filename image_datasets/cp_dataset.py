@@ -33,7 +33,7 @@ def tensor_to_image(tensor, image_path):
     Returns:
     - None
     """
-    if debug_mode: 
+    if debug_mode:
         # Check the tensor dimensions. If it's a batch, take the first image
         if len(tensor.shape) == 4:
             tensor = tensor[0]
@@ -112,13 +112,13 @@ class VitonHDTestDataset(data.Dataset):
     def __getitem__(self, index):
         c_name = self.c_names[index]
         im_name = self.im_names[index]
-        
-        
+
+
         cloth = Image.open(os.path.join(self.dataroot, self.phase, "cloth", c_name)).resize((self.width,self.height))
         cloth_pure = self.transform(cloth)
         cloth_mask = Image.open(os.path.join(self.dataroot, self.phase, "cloth-mask", c_name)).resize((self.width,self.height))
         cloth_mask = self.transform(cloth_mask)
-        
+
         im_pil_big = Image.open(
             os.path.join(self.dataroot, self.phase, "image", im_name)
         ).resize((self.width,self.height))
@@ -129,25 +129,25 @@ class VitonHDTestDataset(data.Dataset):
         mask = mask[:1]
         mask = 1-mask
         im_mask = image * mask
- 
-        pose_img = Image.open(
-            os.path.join(self.dataroot, self.phase, "image-densepose", im_name)
-        ).resize((self.width,self.height))
-        pose_img = self.transform(pose_img)  # [-1,1]
- 
+
+        # pose_img = Image.open(
+        #     os.path.join(self.dataroot, self.phase, "image-densepose", im_name)
+        # ).resize((self.width,self.height))
+        # pose_img = self.transform(pose_img)  # [-1,1]
+
         result = {}
         result["c_name"] = c_name
         result["im_name"] = im_name
         result["cloth_pure"] = cloth_pure
         result["cloth_mask"] = cloth_mask
-        
+
         # Concatenate image and garment along width dimension
         inpaint_image = torch.cat([cloth_pure, im_mask], dim=2)  # dim=2 is width dimension
         result["im_mask"] = inpaint_image
-        
+
         GT_image = torch.cat([cloth_pure, image], dim=2)  # dim=2 is width dimension
         result["image"] = GT_image
-        
+
         # Create extended black mask for garment portion
         garment_mask = torch.zeros_like(1-mask)  # Create mask of same size as original
         extended_mask = torch.cat([garment_mask, 1-mask], dim=2)  # Concatenate masks

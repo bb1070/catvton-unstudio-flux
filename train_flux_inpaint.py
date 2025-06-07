@@ -44,8 +44,8 @@ from tqdm.auto import tqdm
 from transformers import CLIPTextModelWithProjection, CLIPTokenizer, PretrainedConfig, T5EncoderModel, T5TokenizerFast
 from image_datasets.cp_dataset import VitonHDTestDataset
 from paser_helper import parse_args
-from src.flux.train_utils import  prepare_fill_with_mask, prepare_latents, encode_images_to_latents
-from diffusers import FluxTransformer2DModel, FluxFillPipeline
+from src.flux.train_utils import  prepare_inpaint_with_mask, prepare_latents, encode_images_to_latents
+from diffusers import FluxTransformer2DModel, FluxInpaintPipeline
 # from src.flux.pipeline_flux_inpaint import FluxInpaintingPipeline
 from diffusers.image_processor import VaeImageProcessor
 from deepspeed.runtime.engine import DeepSpeedEngine
@@ -181,7 +181,7 @@ def log_validation(
         control_images = []
         control_masks = []
         for batch in dataloader:
-            
+
             # prompt = batch['caption_cloth']
             prompt = [""
                 f"The pair of images highlights a clothing and its styling on a model, high resolution, 4K, 8K; "
@@ -194,13 +194,13 @@ def log_validation(
                 # "emphasizing its superflat construction and thin material. The styling creates a retro-contemporary fusion, "
                 # "reminiscent of 60s fashion while maintaining a timeless cloud jumper aesthetic, all captured in a sophisticated black box presentation."
             ] * len(batch['image'])
-            control_image = batch['image'] 
+            control_image = batch['image']
             control_mask = batch['inpaint_mask']
-            
-        
+
+
             height = args.height
             width = args.width*2
-            
+
             result = pipeline(
                 prompt=prompt,
                 height=height,
@@ -208,10 +208,11 @@ def log_validation(
                 image=control_image,
                 mask_image=control_mask,
                 num_inference_steps=28,
+                strength =1,
                 generator=generator,
-                guidance_scale=30,
+                guidance_scale=3.5,
             ).images
-            
+
             images.extend(result)
             prompts.extend(prompt)
             control_images.extend(control_image)
@@ -224,9 +225,9 @@ def log_validation(
                 {
                     phase_name: [
                         wandb.Image(
-                            image, 
+                            image,
                             caption=f"{i} {prompt}",
-                        ) 
+                        )
                         for i, (image, prompt, control_mask) in enumerate(zip(images, prompts, control_masks))
                     ],
                     f"{phase_name}_control_images": [
@@ -486,7 +487,7 @@ def main(args):
         revision=args.revision,
         variant=args.variant,
     )
-    
+
     vae_scale_factor = (
         2 ** (len(vae.config.block_out_channels) - 1) if vae is not None else 8
     )
@@ -499,16 +500,16 @@ def main(args):
         do_binarize=True,
     )
     transformer = FluxTransformer2DModel.from_pretrained(
-        args.pretrained_inpaint_model_name_or_path, revision=args.revision, variant=args.variant
+        args.pretrained_inpaint_model_name_or_path, revision=args.revision, subfolder="transformer", variant=args.variant
     )
-    
+
 
 
     transformer.requires_grad_(False)
     vae.requires_grad_(False)
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
-    
+
     grad_params = [
         "transformer_blocks.0.",
         "transformer_blocks.1.",
@@ -569,15 +570,15 @@ def main(args):
 
     if args.train_base_model:
         transformer.requires_grad_(False)  # Set all parameters to not require gradients by default
-        
+
         for name, param in transformer.named_parameters():
             if any(grad_param in name for grad_param in grad_params):
                 if ("attn" in name):
                     param.requires_grad = True
                     print(f"Enabling gradients for: {name}")
-        
+
     else:
-        transformer.requires_grad_(False)   
+        transformer.requires_grad_(False)
 
 
     # #you can train your own layers
@@ -589,7 +590,7 @@ def main(args):
     #         param.requires_grad = True
     #     else:
     #         param.requires_grad = False
-    
+
     print(sum([p.numel() for p in transformer.parameters() if p.requires_grad]) / 1000000, 'transformer parameters')
 
     # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
@@ -615,7 +616,7 @@ def main(args):
     if args.gradient_checkpointing:
         if args.train_base_model:
             transformer.enable_gradient_checkpointing()
-        
+
 
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
@@ -689,7 +690,7 @@ def main(args):
     # Optimization parameters
     if args.train_base_model:
         transformer_parameters_with_lr = {"params": transformer.parameters(), "lr": args.learning_rate}
-   
+
     params_to_optimize = [transformer_parameters_with_lr]
 
     # Optimizer creation
@@ -759,7 +760,7 @@ def main(args):
         size=(args.height, args.width),
         data_list=args.train_data_list,
     )
-    
+
     train_verification_dataset = VitonHDTestDataset(
         dataroot_path=args.dataroot,
         phase="train",
@@ -767,7 +768,7 @@ def main(args):
         size=(args.height, args.width),
         data_list=args.train_verification_list,
     )
-    
+
     validation_dataset = VitonHDTestDataset(
         dataroot_path=args.dataroot,
         phase="test",
@@ -781,13 +782,13 @@ def main(args):
         shuffle=False,
         batch_size=args.train_batch_size,
     )
-    
+
     train_verification_dataloader = torch.utils.data.DataLoader(
         train_verification_dataset,
         shuffle=False,
         batch_size=args.train_batch_size,
     )
-    
+
     validation_dataloader = torch.utils.data.DataLoader(
         validation_dataset,
         shuffle=False,
@@ -840,7 +841,7 @@ def main(args):
             transformer, optimizer, train_dataloader, lr_scheduler
         )
 
-    
+
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -920,17 +921,18 @@ def main(args):
     for epoch in range(first_epoch, args.num_train_epochs):
         if args.train_base_model:
             transformer.train()
-        
+
         for step, batch in enumerate(train_dataloader):
             if args.train_base_model:
                 models_to_accumulate = [transformer]
-            
-            
+
+
             with accelerator.accumulate(models_to_accumulate):
                 # vae_scale_factor = 2 ** (len(vae.config.block_out_channels))
                 batch_size = batch["image"].shape[0]
                 pixel_values = batch["image"].to(dtype=vae.dtype)
                 # prompts = batch["caption_cloth"]
+                # caption_for_garment =batch["caption"]
                 prompts = [""
                     f"The pair of images highlights a clothing and its styling on a model, high resolution, 4K, 8K; "
                     f"[IMAGE1] Detailed product shot of a clothing"
@@ -942,23 +944,32 @@ def main(args):
                     # "emphasizing its superflat construction and thin material. The styling creates a retro-contemporary fusion, "
                     # "reminiscent of 60s fashion while maintaining a timeless cloud jumper aesthetic, all captured in a sophisticated black box presentation."
                 ] * len(pixel_values)
-                # prompts = ["upperbody"] * len(pixel_values)
+                # # prompts = ["upperbody"] * len(pixel_values)
+
+                # prompts = [
+                #     (
+                #         f"The pair of images highlights a clothing and its styling on a model, high resolution, 4K, 8K; "
+                #         f"[IMAGE1] Detailed product shot: {caption if caption else 'a clothing item'}. "
+                #         f"[IMAGE2] The same garment is worn by a model in a lifestyle setting."
+                #     )
+                #     for caption in caption_for_garment
+                # ]
 
                 control_mask = batch["inpaint_mask"].to(dtype=vae.dtype)
                 control_image = batch["im_mask"].to(dtype=vae.dtype)
                 garment_image = batch["cloth_pure"]
                 # garment_image_0_1 = (batch["cloth_pure"] + 1.0) / 2
                 garment_image = garment_image.to(dtype=vae.dtype)
-                
-                
+
+
                 # print("image_proj.shape", image_proj.shape)
 
                 # encode batch prompts when custom prompts are provided for each image -
                 prompt_embeds, pooled_prompt_embeds, text_ids = compute_text_embeddings(
                     prompts, text_encoders, tokenizers
                 )
-                
-                inpaint_cond, _, _ = prepare_fill_with_mask(
+
+                inpaint_cond, _, _ = prepare_inpaint_with_mask(
                     image_processor=image_processor,
                     mask_processor=mask_processor,
                     vae=vae,
@@ -972,15 +983,28 @@ def main(args):
                     device=accelerator.device,
                     dtype=weight_dtype,
                 )
-                
-                
+
+
                 # TODO: controlnet dropout might cause instability, need to run more experiments
                 if args.dropout_prob > 0:
                     dropout = torch.nn.Dropout(p=args.dropout_prob)
                     inpaint_cond = dropout(inpaint_cond)
 
-                model_input = encode_images_to_latents(vae, pixel_values, weight_dtype, args.height, args.width*2)
-                
+                # model_input = encode_images_to_latents(vae, pixel_values, weight_dtype, args.height, args.width*2)
+
+                W = args.width                          # half-width (in pixels)
+                H = args.height
+
+                # split blank-canvas half vs. garment half
+                garment  = torch.zeros_like(pixel_values[:, :, :, :W])
+                canvas = pixel_values[:, :, :, W:]
+
+                lat_canvas  = encode_images_to_latents(vae, canvas,  weight_dtype, H, W)
+                lat_garment = encode_images_to_latents(vae, garment, weight_dtype, H, W)
+
+                model_input = torch.cat([lat_canvas, lat_garment], dim=-1)
+
+
                 latent_image_ids = prepare_latents(
                     vae_scale_factor,
                     batch_size,
@@ -1011,26 +1035,26 @@ def main(args):
                 sigmas = get_sigmas(timesteps, n_dim=model_input.ndim, dtype=model_input.dtype)
                 noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
-                packed_noisy_model_input = FluxFillPipeline._pack_latents(
+                packed_noisy_model_input = FluxInpaintPipeline._pack_latents(
                     noisy_model_input,
                     batch_size=model_input.shape[0],
                     num_channels_latents=model_input.shape[1],
                     height=model_input.shape[2],
                     width=model_input.shape[3],
                 )
-                
+
                 # handle guidance
                 # guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
                 guidance = torch.full([1], args.guidance_scale, device=accelerator.device)
                 guidance = guidance.expand(model_input.shape[0])
-                
+
                 # print("before concat packed_noisy_model_input.shape", packed_noisy_model_input.shape, "inpaint_cond.shape", inpaint_cond.shape)
-                
+
                 if inpaint_cond is not None:
                     packed_noisy_model_input = torch.cat([packed_noisy_model_input, inpaint_cond], dim=-1)
-                
+
                 # print("guidance", guidance, "pooled_prompt_embeds.shape", pooled_prompt_embeds.shape, "prompt_embeds.shape", prompt_embeds.shape)
-                
+
                 # Predict the noise residual
                 model_pred = transformer(
                     hidden_states=packed_noisy_model_input,
@@ -1043,10 +1067,10 @@ def main(args):
                     img_ids=latent_image_ids,
                     return_dict=False,
                 )[0]
-                
+
                 # print("model_pred.shape", model_pred.shape, "prompt_embeds.shape", prompt_embeds.shape, "packed_noisy_model_input.shape", packed_noisy_model_input.shape, "refnet_image.shape", refnet_image.shape)
                 # upscaling height & width as discussed in https://github.com/huggingface/diffusers/pull/9257#discussion_r1731108042
-                model_pred = FluxFillPipeline._unpack_latents(
+                model_pred = FluxInpaintPipeline._unpack_latents(
                     model_pred,
                     height=args.height,
                     width=args.width*2,
@@ -1112,10 +1136,10 @@ def main(args):
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
-            
+
             if accelerator.sync_gradients:
                 if global_step % args.validation_steps == 1:
-                    pipeline = FluxFillPipeline.from_pretrained(
+                    pipeline = FluxInpaintPipeline.from_pretrained(
                         args.pretrained_model_name_or_path,
                         transformer=accelerator.unwrap_model(transformer),
                         torch_dtype=weight_dtype,
@@ -1125,7 +1149,7 @@ def main(args):
                         text_encoder=text_encoder_one,
                         text_encoder_2=text_encoder_two,
                     )
-                    
+
                     log_validation(
                         pipeline=pipeline,
                         args=args,
@@ -1134,7 +1158,7 @@ def main(args):
                         tag="train verification",
                         epoch=epoch,
                     )
-                    
+
                     log_validation(
                         pipeline=pipeline,
                         args=args,
@@ -1152,14 +1176,14 @@ def main(args):
     if accelerator.is_main_process:
         transformer = unwrap_model(transformer)
 
-        pipeline = FluxFillPipeline.from_pretrained(args.pretrained_model_name_or_path, transformer=transformer)
+        pipeline = FluxInpaintPipeline.from_pretrained(args.pretrained_model_name_or_path, transformer=transformer)
 
         # save the pipeline
         pipeline.save_pretrained(args.output_dir)
 
         # Final inference
         # Load previous pipeline
-        pipeline = FluxFillPipeline.from_pretrained(
+        pipeline = FluxInpaintPipeline.from_pretrained(
             args.output_dir,
             revision=args.revision,
             variant=args.variant,

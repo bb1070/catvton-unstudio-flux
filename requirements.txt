@@ -5,7 +5,7 @@ gradio_client==1.4.3
 tqdm==4.66.5
 transformers==4.43.3
 numpy==1.26.4
-peft==0.13.2
+peft==0.15.0
 huggingface-hub
 spaces
 protobuf
