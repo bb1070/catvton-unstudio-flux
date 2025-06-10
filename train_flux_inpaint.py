@@ -990,19 +990,19 @@ def main(args):
                     dropout = torch.nn.Dropout(p=args.dropout_prob)
                     inpaint_cond = dropout(inpaint_cond)
 
-                # model_input = encode_images_to_latents(vae, pixel_values, weight_dtype, args.height, args.width*2)
+                model_input = encode_images_to_latents(vae, pixel_values, weight_dtype, args.height, args.width*2)
 
-                W = args.width                          # half-width (in pixels)
-                H = args.height
+                # W = args.width                          # half-width (in pixels)
+                # H = args.height
 
-                # split blank-canvas half vs. garment half
-                garment  = torch.zeros_like(pixel_values[:, :, :, :W])
-                canvas = pixel_values[:, :, :, W:]
+                # # split blank-canvas half vs. garment half
+                # garment  = torch.zeros_like(pixel_values[:, :, :, :W])
+                # canvas = pixel_values[:, :, :, W:]
 
-                lat_canvas  = encode_images_to_latents(vae, canvas,  weight_dtype, H, W)
-                lat_garment = encode_images_to_latents(vae, garment, weight_dtype, H, W)
+                # lat_canvas  = encode_images_to_latents(vae, canvas,  weight_dtype, H, W)
+                # lat_garment = encode_images_to_latents(vae, garment, weight_dtype, H, W)
 
-                model_input = torch.cat([lat_canvas, lat_garment], dim=-1)
+                # model_input = torch.cat([lat_canvas, lat_garment], dim=-1)
 
 
                 latent_image_ids = prepare_latents(

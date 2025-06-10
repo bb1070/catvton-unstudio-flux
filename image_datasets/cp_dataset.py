@@ -114,17 +114,17 @@ class VitonHDTestDataset(data.Dataset):
         im_name = self.im_names[index]
 
 
-        cloth = Image.open(os.path.join(self.dataroot, self.phase, "cloth", c_name)).resize((self.width,self.height))
+        cloth = Image.open(os.path.join(self.dataroot, self.phase, "cloth", c_name)).convert("RGB").resize((self.width,self.height))
         cloth_pure = self.transform(cloth)
-        cloth_mask = Image.open(os.path.join(self.dataroot, self.phase, "cloth-mask", c_name)).resize((self.width,self.height))
+        cloth_mask = Image.open(os.path.join(self.dataroot, self.phase, "cloth-mask", c_name)).convert("RGB").resize((self.width,self.height))
         cloth_mask = self.transform(cloth_mask)
 
         im_pil_big = Image.open(
             os.path.join(self.dataroot, self.phase, "image", im_name)
-        ).resize((self.width,self.height))
+        ).convert("RGB").resize((self.width,self.height))
         image = self.transform(im_pil_big)
 
-        mask = Image.open(os.path.join(self.dataroot, self.phase, "agnostic-mask", im_name.replace('.jpg','_mask.png'))).resize((self.width,self.height))
+        mask = Image.open(os.path.join(self.dataroot, self.phase, "agnostic-mask", im_name.replace('.jpg','_mask.png'))).convert("RGB").resize((self.width,self.height))
         mask = self.toTensor(mask)
         mask = mask[:1]
         mask = 1-mask
