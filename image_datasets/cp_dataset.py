@@ -113,6 +113,13 @@ class VitonHDTestDataset(data.Dataset):
         c_name = self.c_names[index]
         im_name = self.im_names[index]
 
+        # Extract numeric part (remove extension and convert to int)
+        c_num = int(os.path.splitext(c_name)[0])
+        im_num = int(os.path.splitext(im_name)[0])
+
+        # Check if either c_name or im_name is >= 11648
+        do_inverse = (c_num >= 11648) or (im_num >= 11648)
+
 
         cloth = Image.open(os.path.join(self.dataroot, self.phase, "cloth", c_name)).convert("RGB").resize((self.width,self.height))
         cloth_pure = self.transform(cloth)
@@ -128,7 +135,11 @@ class VitonHDTestDataset(data.Dataset):
         mask = self.toTensor(mask)
         mask = mask[:1]
         mask = 1-mask
-        im_mask = image * mask
+        if do_inverse:
+            im_mask = cloth_pure * mask
+        else:
+            im_mask = image * mask
+        # im_mask = image * mask
 
         # pose_img = Image.open(
         #     os.path.join(self.dataroot, self.phase, "image-densepose", im_name)
@@ -142,15 +153,23 @@ class VitonHDTestDataset(data.Dataset):
         result["cloth_mask"] = cloth_mask
 
         # Concatenate image and garment along width dimension
-        inpaint_image = torch.cat([cloth_pure, im_mask], dim=2)  # dim=2 is width dimension
+        if do_inverse:
+            inpaint_image = torch.cat([im_mask, image], dim=2)
+        else:
+            inpaint_image = torch.cat([cloth_pure, im_mask], dim=2)
+        # inpaint_image = torch.cat([cloth_pure, im_mask], dim=2)
         result["im_mask"] = inpaint_image
 
         GT_image = torch.cat([cloth_pure, image], dim=2)  # dim=2 is width dimension
         result["image"] = GT_image
 
         # Create extended black mask for garment portion
-        garment_mask = torch.zeros_like(1-mask)  # Create mask of same size as original
-        extended_mask = torch.cat([garment_mask, 1-mask], dim=2)  # Concatenate masks
+        garment_mask = torch.zeros_like(1-mask)
+        if do_inverse:
+            extended_mask = torch.cat([1-mask, garment_mask ], dim=2)
+        else:
+            extended_mask = torch.cat([garment_mask, 1-mask], dim=2)
+        # extended_mask = torch.cat([garment_mask, 1-mask], dim=2)
         result["inpaint_mask"] = extended_mask
 
         return result
