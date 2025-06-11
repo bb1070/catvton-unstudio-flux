@@ -214,7 +214,7 @@ def log_validation(
                 generator=generator,
                 guidance_scale=3.5,
                 tryon=False,
-                target_width=width/2,
+                target_width=args.width,
                 output_type="pil",
             ).images
 
