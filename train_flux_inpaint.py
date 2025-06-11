@@ -45,7 +45,9 @@ from transformers import CLIPTextModelWithProjection, CLIPTokenizer, PretrainedC
 from image_datasets.cp_dataset import VitonHDTestDataset
 from paser_helper import parse_args
 from src.flux.train_utils import  prepare_inpaint_with_mask, prepare_latents, encode_images_to_latents
-from diffusers import FluxTransformer2DModel, FluxInpaintPipeline
+from diffusers import FluxTransformer2DModel
+from inpaint_pipeline import FluxTryonPipeline
+# from diffusers import FluxTransformer2DModel, FluxInpaintPipeline
 # from src.flux.pipeline_flux_inpaint import FluxInpaintingPipeline
 from diffusers.image_processor import VaeImageProcessor
 from deepspeed.runtime.engine import DeepSpeedEngine
@@ -211,6 +213,9 @@ def log_validation(
                 strength =1,
                 generator=generator,
                 guidance_scale=3.5,
+                tryon=False,
+                target_width=width/2,
+                output_type="pil",
             ).images
 
             images.extend(result)
@@ -990,19 +995,19 @@ def main(args):
                     dropout = torch.nn.Dropout(p=args.dropout_prob)
                     inpaint_cond = dropout(inpaint_cond)
 
-                model_input = encode_images_to_latents(vae, pixel_values, weight_dtype, args.height, args.width*2)
+                # model_input = encode_images_to_latents(vae, pixel_values, weight_dtype, args.height, args.width*2)
 
-                # W = args.width                          # half-width (in pixels)
-                # H = args.height
+                W = args.width                          # half-width (in pixels)
+                H = args.height
 
-                # # split blank-canvas half vs. garment half
-                # garment  = torch.zeros_like(pixel_values[:, :, :, :W])
-                # canvas = pixel_values[:, :, :, W:]
+                # split blank-canvas half vs. garment half
+                canvas  = torch.zeros_like(pixel_values[:, :, :, :W])
+                garment = pixel_values[:, :, :, W:]
 
-                # lat_canvas  = encode_images_to_latents(vae, canvas,  weight_dtype, H, W)
-                # lat_garment = encode_images_to_latents(vae, garment, weight_dtype, H, W)
+                lat_canvas  = encode_images_to_latents(vae, canvas,  weight_dtype, H, W)
+                lat_garment = encode_images_to_latents(vae, garment, weight_dtype, H, W)
 
-                # model_input = torch.cat([lat_canvas, lat_garment], dim=-1)
+                model_input = torch.cat([lat_canvas, lat_garment], dim=-1)
 
 
                 latent_image_ids = prepare_latents(
@@ -1013,6 +1018,22 @@ def main(args):
                     weight_dtype,
                     accelerator.device,
                 )
+
+                # latents, noise, image_latents, latent_image_ids = FluxTryonPipeline.prepare_latents(
+                #     self=FluxTryonPipeline,
+                #     image=image_tensor,
+                #     timestep=current_timestep,
+                #     batch_size=batch_size,
+                #     num_channels_latents=num_channels,
+                #     height=args.height,
+                #     width=args.width * 2,
+                #     target_width=args.width,
+                #     tryon=False,  # or False, depending on use
+                #     dtype=weight_dtype,
+                #     device=accelerator.device,
+                #     generator=None,
+                #     latents=None
+                # )
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(model_input)
@@ -1035,7 +1056,7 @@ def main(args):
                 sigmas = get_sigmas(timesteps, n_dim=model_input.ndim, dtype=model_input.dtype)
                 noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
-                packed_noisy_model_input = FluxInpaintPipeline._pack_latents(
+                packed_noisy_model_input = FluxTryonPipeline._pack_latents(
                     noisy_model_input,
                     batch_size=model_input.shape[0],
                     num_channels_latents=model_input.shape[1],
@@ -1070,7 +1091,7 @@ def main(args):
 
                 # print("model_pred.shape", model_pred.shape, "prompt_embeds.shape", prompt_embeds.shape, "packed_noisy_model_input.shape", packed_noisy_model_input.shape, "refnet_image.shape", refnet_image.shape)
                 # upscaling height & width as discussed in https://github.com/huggingface/diffusers/pull/9257#discussion_r1731108042
-                model_pred = FluxInpaintPipeline._unpack_latents(
+                model_pred = FluxTryonPipeline._unpack_latents(
                     model_pred,
                     height=args.height,
                     width=args.width*2,
@@ -1139,7 +1160,7 @@ def main(args):
 
             if accelerator.sync_gradients:
                 if global_step % args.validation_steps == 1:
-                    pipeline = FluxInpaintPipeline.from_pretrained(
+                    pipeline = FluxTryonPipeline.from_pretrained(
                         args.pretrained_model_name_or_path,
                         transformer=accelerator.unwrap_model(transformer),
                         torch_dtype=weight_dtype,
@@ -1176,14 +1197,14 @@ def main(args):
     if accelerator.is_main_process:
         transformer = unwrap_model(transformer)
 
-        pipeline = FluxInpaintPipeline.from_pretrained(args.pretrained_model_name_or_path, transformer=transformer)
+        pipeline = FluxTryonPipeline.from_pretrained(args.pretrained_model_name_or_path, transformer=transformer)
 
         # save the pipeline
         pipeline.save_pretrained(args.output_dir)
 
         # Final inference
         # Load previous pipeline
-        pipeline = FluxInpaintPipeline.from_pretrained(
+        pipeline = FluxTryonPipeline.from_pretrained(
             args.output_dir,
             revision=args.revision,
             variant=args.variant,
